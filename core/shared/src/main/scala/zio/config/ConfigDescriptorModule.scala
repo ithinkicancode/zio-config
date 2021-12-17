@@ -200,59 +200,6 @@ trait ConfigDescriptorModule extends ConfigSourceModule { module =>
       describe(description)
 
     /**
-     * |@| is a ConfigDescriptor builder. We know `ConfigDescriptor`
-     * is a program that describes the retrieval of a set of configuration parameters.
-     *
-     *  Below given is a `ConfigDescriptor` that describes the retrieval of a single config.
-     *
-     *  {{{
-     *    val port: ConfigDescriptor[String] = string("PORT")
-     *  }}}
-     *
-     *  However, in order to retrieve multiple configuration parameters,
-     *  we can make use of `|@|`.
-     *
-     *  Example:
-     *
-     *  {{{
-     *   final case class Config(userName: String, port: Int)
-     *
-     *   object Config {
-     *      val dbConfig: ConfigDescriptor[Config] =
-     *         (string("USERNAME") |@| int("PORT"))(Config.apply, Config.unapply)
-     *   }
-     *
-     *  }}}
-     *
-     *  Details:
-     *
-     *  {{{
-     *     (string("USERNAME") |@| int("PORT"))(Config.apply, Config.unapply)
-     *  }}}
-     *
-     *  is equal to
-     *
-     *  {{{
-     *    (string("USERNAME") |@| int("PORT")).apply((a, b) => Config.apply(a, b), Config.unapply)
-     *  }}}
-     */
-    final def |@|[B](
-      that: => ConfigDescriptor[B]
-    ): ProductBuilder[ConfigDescriptor, A, B] =
-      new ProductBuilder[ConfigDescriptor, A, B] {
-
-        override def zip[X, Y]: (ConfigDescriptor[X], ConfigDescriptor[Y]) => ConfigDescriptor[(X, Y)] =
-          (a, b) => lazyDesc(a.zip(b))
-
-        override def xmapEither[X, Y]
-          : (ConfigDescriptor[X], X => Either[String, Y], Y => Either[String, X]) => ConfigDescriptor[Y] =
-          (a, b, c) => lazyDesc(a.transformOrFail(b, c))
-
-        override val a: ConfigDescriptor[A] = lazyDesc(self)
-        override val b: ConfigDescriptor[B] = lazyDesc(that)
-      }
-
-    /**
      * `<>` is an alias to function `orElse`.
      * This is used to represent fall-back logic when we describe config retrievals.
      *
@@ -1233,11 +1180,13 @@ trait ConfigDescriptorModule extends ConfigSourceModule { module =>
      *    val config2: ConfigDescriptor[(String, Int)] = (string("URL") |@| int("PORT")).tupled
      *
      *  }}}
-     *
-     *  Using `|@|` over `<>` avoids nested tuples.
      */
-    final def zip[B](that: => ConfigDescriptor[B]): ConfigDescriptor[(A, B)] =
-      ConfigDescriptorAdt.zipDesc(self, that)
+    final def zip[B](
+      that: => ConfigDescriptor[B]
+    )(implicit Z: InvariantZip[A, B]): ConfigDescriptor[Z.Out] =
+      ConfigDescriptorAdt
+        .zipDesc(self, that)
+        .transform[Z.Out](a => Z.combine(a._1, a._2), zOut => (Z.projectLeft(zOut), Z.projectRight(zOut)))
 
     /**
      * `zipWith` is similar to `xmapEither` but the function
@@ -1262,7 +1211,7 @@ trait ConfigDescriptorModule extends ConfigSourceModule { module =>
       to: (A, B) => Either[String, C],
       from: C => Either[String, (A, B)]
     ): ConfigDescriptor[C] =
-      (self |@| that)
+      (self zip that)
         .apply[(A, B)](Tuple2.apply, Tuple2.unapply)
         .transformOrFail({ case (a, b) => to(a, b) }, from)
   }
